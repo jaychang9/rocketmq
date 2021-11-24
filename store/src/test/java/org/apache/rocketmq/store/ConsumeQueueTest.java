@@ -42,7 +42,9 @@ public class ConsumeQueueTest {
     private static final String topic = "abc";
     private static final int queueId = 0;
     private static final String storePath = "." + File.separator + "unit_test_store";
+    // 一个commitLogFile大小为8k
     private static final int commitLogFileSize = 1024 * 8;
+
     private static final int cqFileSize = 10 * 20;
     private static final int cqExtFileSize = 10 * (ConsumeQueueExt.CqExtUnit.MIN_EXT_UNIT_SIZE + 64);
 
