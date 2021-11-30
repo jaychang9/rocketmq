@@ -16,26 +16,52 @@ public class RocketMQCommitLogParser {
         MappedByteBuffer mappedByteBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, fileChannel.size());
         //fileChannel.close();
 
-        FileChannel commitLogFileChannel = new FileInputStream("E:\\tmp\\rocketmq\\store\\commitlog\\00000000003221225472").getChannel();
-        MappedByteBuffer commitLogMappedByteBuffer = commitLogFileChannel.map(FileChannel.MapMode.READ_ONLY, 0, commitLogFileChannel.size());
-        //commitLogFileChannel.close();
+        File commitLogDir = new File("E:\\tmp\\rocketmq\\store\\commitlog");
+        File[] commitLogFiles = commitLogDir.listFiles();
+        Map<String, MappedByteBuffer> commitLogMap = new HashMap<>();
+        for (File commitLogFile : commitLogFiles) {
+            String commitLogFileName = commitLogFile.getName();
+            long commitLogOffset = Long.valueOf(commitLogFileName);
+            FileInputStream fileInputStream = new FileInputStream(commitLogFile);
+            FileChannel commitLogFileChannel = fileInputStream.getChannel();
+            long size = commitLogFileChannel.size();
+            MappedByteBuffer mbb = commitLogFileChannel.map(FileChannel.MapMode.READ_ONLY, 0, size);
+            commitLogFileChannel.close();
+            String offsetBeginEnd = commitLogOffset + "_" + (commitLogOffset + size - 1);
+            commitLogMap.put(offsetBeginEnd, mbb);
+            fileInputStream.close();
+        }
 
 
         for (int i = 0; i < consumeQueueFileSize; i += 20) {
             // 每一个条目共20个字节，分别为8字节的commitlog物理偏移量、4字节的消息长度、8字节tag hashcode
             mappedByteBuffer.position(i);
-            long commitLogOffset = mappedByteBuffer.getLong();
+            long messageOffsetBegin = mappedByteBuffer.getLong();
             int messageSize = mappedByteBuffer.getInt();
+            long messageOffsetEnd = messageOffsetBegin + messageSize - 1;
             long tagHashCode = mappedByteBuffer.getLong();
 
-            System.out.println("commitLogOffset=" + commitLogOffset + ",messageSize=" + messageSize + ",tagHashCode=" + tagHashCode);
+            if (messageSize == 0) {
+                break;
+            }
 
-            byte[] buf = new byte[messageSize];
-            int realCommitLogOffset = (int) (commitLogOffset - 3221225472l);
-            commitLogMappedByteBuffer.position(realCommitLogOffset);
-            commitLogMappedByteBuffer.get(buf, realCommitLogOffset, (int) messageSize);
-            System.out.println(new String(buf));
-
+            for (Map.Entry<String, MappedByteBuffer> entry : commitLogMap.entrySet()) {
+                String entryKey = entry.getKey();
+                String[] strings = entryKey.split("_");
+                // commitLog offset begin
+                long offsetBegin = Long.valueOf(strings[0]);
+                // commitLog offset end
+                long offsetEnd = Long.valueOf(strings[1]);
+                if ((offsetBegin <= messageOffsetBegin) && (messageOffsetEnd <= offsetEnd)) {
+                    MappedByteBuffer commitLogMappedByteBuffer = entry.getValue();
+                    byte[] buff = new byte[messageSize];
+                    commitLogMappedByteBuffer.position((int) (messageOffsetBegin - offsetBegin));
+                    int mSize = commitLogMappedByteBuffer.getInt();
+                    int magicCode = commitLogMappedByteBuffer.getInt();
+                    commitLogMappedByteBuffer.get(buff, 0, messageSize - 8);
+                    System.out.println(String.format("mSize=%s,messageSize=%s,magicCode=%s,messageBody=%s", mSize, messageSize, magicCode, new String(buff)));
+                }
+            }
         }
     }
 
@@ -82,17 +108,31 @@ public class RocketMQCommitLogParser {
                     long offsetEnd = Long.valueOf(strings[1]);
                     long messageOffsetBegin = messageOffset;
                     long messageOffsetEnd = messageOffset + messageSize - 1;
-                    if ((messageOffsetBegin >= offsetBegin && messageOffsetBegin <= offsetEnd) && (messageOffsetEnd >= offsetBegin && messageOffsetEnd <= offsetEnd)) {
+                    if ((messageOffsetBegin >= offsetBegin) && (messageOffsetEnd <= offsetEnd)) {
                         MappedByteBuffer mappedByteBuffer = entry.getValue();
-                        byte[] buff = new byte[messageSize];
                         mappedByteBuffer.position((int) (messageOffsetBegin - offsetBegin));
-                        int mSize = mappedByteBuffer.getInt();
-                        System.out.println("mSize="+mSize+",messageSize="+messageSize);
-                        int magicCode = mappedByteBuffer.getInt();
-                        System.out.println("magicCode="+magicCode);
-                        mappedByteBuffer.get(buff, 0, messageSize-8);
-                        System.out.println(new String(buff));
-                        System.out.println("************************************************************************************************************************************************");
+                        int mSize = mappedByteBuffer.getInt();//4
+                        int magicCode = mappedByteBuffer.getInt();//8
+                        int bodyCRC = mappedByteBuffer.getInt();//12
+                        int queueId = mappedByteBuffer.getInt();//16
+                        int flag = mappedByteBuffer.getInt();//20
+                        long queueOffset = mappedByteBuffer.getLong();//28
+                        long physicalOffset = mappedByteBuffer.getLong();//36
+                        int sysFlag = mappedByteBuffer.getInt();//40
+                        long bornTimestamp = mappedByteBuffer.getLong();//48
+                        long bornHostPort = mappedByteBuffer.getLong();//56
+                        long storeTimestamp = mappedByteBuffer.getLong();//64
+                        long storeHostPort = mappedByteBuffer.getLong();//72
+                        int reconsumeTimes = mappedByteBuffer.getInt();//76
+                        long preparedTransactionOffset = mappedByteBuffer.getLong();//84
+                        int bodyLength = mappedByteBuffer.getInt();//88
+                        byte[] buff = new byte[messageSize - 88];
+                        mappedByteBuffer.get(buff, 0, messageSize - 88);
+                        byte topicLength = mappedByteBuffer.get();
+                        System.out.print(
+                                String.format("mSize=%s,messageSize=%s,magicCode=%s,bodyCRC=%s,queueId=%s,flag=%s,queueOffset=%s,physicalOffset=%s",
+                                        mSize, messageSize, magicCode, bodyCRC, queueId, flag, queueOffset, physicalOffset));
+                        System.out.println(String.format(",sysFlag=%s,bornTimestamp=%s,bornHostPort=%s,storeTimestamp=%s,storeHostPort=%s,reconsumeTimes=%s,preparedTransactionOffset=%s,bodyLength=%s,messageBody=%s,topicLength=%s", sysFlag, bornTimestamp, bornHostPort, storeTimestamp, storeHostPort, reconsumeTimes, preparedTransactionOffset, bodyLength, new String(buff), (int) topicLength));
                     }
                 }
 
@@ -105,6 +145,7 @@ public class RocketMQCommitLogParser {
     }
 
     public static void main(String[] args) throws IOException {
+        //test1();
         readCommitLog();
     }
 }
